@@ -22,6 +22,7 @@ def home():
 
 @app.get("/test-supabase")
 def test_supabase():
+
     supabase = create_client(
         SUPABASE_URL,
         SUPABASE_SERVICE_ROLE_KEY
@@ -37,8 +38,42 @@ def test_supabase():
     return data.data
 
 
+@app.get("/test-meta")
+def test_meta():
+
+    supabase = create_client(
+        SUPABASE_URL,
+        SUPABASE_SERVICE_ROLE_KEY
+    )
+
+    account = (
+        supabase
+        .table("meta_accounts")
+        .select("*")
+        .eq("is_active", True)
+        .limit(1)
+        .execute()
+        .data[0]
+    )
+
+    url = f"https://graph.facebook.com/v21.0/act_{account['ad_account_id']}/insights"
+
+    params = {
+        "access_token": account["access_token"],
+        "level": "campaign",
+        "time_range": '{"since":"2026-06-01","until":"2026-06-10"}',
+        "time_increment": 1,
+        "fields": "campaign_id,campaign_name,date_start,date_stop,spend,impressions,clicks,reach"
+    }
+
+    response = requests.get(url, params=params)
+
+    return response.json()
+
+
 @app.get("/auth/meta/start")
 def meta_start():
+
     redirect_uri = f"{BACKEND_URL}/auth/meta/callback"
 
     meta_login_url = (
@@ -54,6 +89,7 @@ def meta_start():
 
 @app.get("/auth/meta/callback")
 def meta_callback(request: Request):
+
     code = request.query_params.get("code")
 
     if not code:
@@ -72,6 +108,7 @@ def meta_callback(request: Request):
     )
 
     token_data = token_response.json()
+
     access_token = token_data.get("access_token")
 
     if not access_token:
