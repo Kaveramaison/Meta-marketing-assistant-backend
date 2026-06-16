@@ -69,6 +69,7 @@ if "error" in data:
 
 rows = data.get("data", [])
 
+
 def get_results(actions):
     if not actions:
         return 0
@@ -82,6 +83,7 @@ def get_results(actions):
             return int(float(action.get("value", 0)))
 
     return 0
+
 
 insert_rows = []
 
@@ -111,7 +113,7 @@ print("Rows prepared for Supabase:", len(insert_rows))
 
 if insert_rows:
     db_result = (
-        supabase.table("marketing_performance")
+        supabase.table("marketing_performance_daily")
         .insert(insert_rows)
         .execute()
     )
