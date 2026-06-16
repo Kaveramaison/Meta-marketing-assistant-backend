@@ -25,7 +25,7 @@ if not result.data:
 meta_account = result.data[0]
 
 access_token = meta_account["access_token"]
-ad_account_id = meta_account["ad_account_id"]
+ad_account_id = f"act_{meta_account['ad_account_id']}"
 
 print("Using ad account:", ad_account_id)
 print("Ad account name:", meta_account.get("ad_account_name"))
