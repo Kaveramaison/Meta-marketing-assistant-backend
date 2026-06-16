@@ -11,7 +11,6 @@ if not SUPABASE_URL or not SUPABASE_KEY:
 
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# 1. Get Meta account from Supabase
 result = (
     supabase.table("meta_accounts")
     .select("id, client_id, ad_account_id, ad_account_name, access_token")
@@ -30,7 +29,6 @@ ad_account_id = f"act_{meta_account['ad_account_id']}"
 print("Using ad account:", ad_account_id)
 print("Ad account name:", meta_account.get("ad_account_name"))
 
-# 2. Pull June 1 granular Meta data
 url = f"https://graph.facebook.com/v20.0/{ad_account_id}/insights"
 
 params = {
@@ -49,7 +47,6 @@ params = {
         "adset_name",
         "ad_id",
         "ad_name",
-        "country",
         "impressions",
         "clicks",
         "reach",
@@ -73,7 +70,6 @@ print("\nRows fetched:", len(rows))
 print("\nSample rows:")
 print(json.dumps(rows[:5], indent=2))
 
-# 3. Totals
 total_spend = sum(float(r.get("spend", 0)) for r in rows)
 total_clicks = sum(int(r.get("clicks", 0)) for r in rows)
 total_impressions = sum(int(r.get("impressions", 0)) for r in rows)
