@@ -7,7 +7,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from services.meta_sync import run_backfill_sync, run_daily_metadata_sync, run_daily_sync, run_scheduled_sync
+from services.meta_sync import run_backfill_sync, run_daily_sync, run_scheduled_sync
+from services.meta_warehouse_sync import run_daily_metadata_sync
 
 
 def main():
