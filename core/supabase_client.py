@@ -29,10 +29,13 @@ def validate_supabase_settings():
         raise RuntimeError("SUPABASE_URL should look like https://<project-ref>.supabase.co.")
 
     key = settings.supabase_service_role_key
+    if key.startswith("sb_secret_"):
+        return
+
     if key.count(".") != 2:
         raise RuntimeError(
             "SUPABASE_SERVICE_ROLE_KEY is not a valid Supabase JWT. "
-            "Paste the full service_role key value from Supabase Project Settings > API."
+            "Paste either the new sb_secret_ key or the legacy service_role JWT from Supabase Project Settings > API."
         )
 
     payload = decode_jwt_payload(key)
