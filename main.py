@@ -1,10 +1,19 @@
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from core.config import settings
 from routes.dashboard import router as dashboard_router
 from routes.jobs import router as jobs_router
 
 app = FastAPI(title="AI Marketing OS Backend", version="0.2.0")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=list(settings.frontend_origins),
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["*"],
+)
 
 app.include_router(dashboard_router)
 app.include_router(jobs_router)
