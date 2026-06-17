@@ -21,7 +21,7 @@ SUPABASE_URL
 SUPABASE_SERVICE_ROLE_KEY
 ```
 
-`SUPABASE_SERVICE_ROLE_KEY` must be the full `service_role` key value from Supabase Project Settings > API. Do not use the anon/public key, project ref, URL, or a value with `Bearer ` copied in front.
+`SUPABASE_SERVICE_ROLE_KEY` must be the full secret key value from Supabase Project Settings > API. Prefer the new `sb_secret_...` secret key. The legacy `service_role` JWT also works. Do not use the publishable/anon key, project ref, URL, or a value with `Bearer ` copied in front.
 
 Optional:
 
