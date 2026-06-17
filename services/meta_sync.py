@@ -25,9 +25,9 @@ PURCHASE_ACTION_TYPES = {
 }
 COUNTRY_BREAKDOWN = "country"
 BREAKDOWN_CONFIGS = {
-    "placement": "country,publisher_platform,platform_position",
-    "demographic": "country,age,gender",
-    "device": "country,impression_device",
+    "placement": "publisher_platform,platform_position",
+    "demographic": "age,gender",
+    "device": "impression_device",
     "hourly": "hourly_stats_aggregated_by_advertiser_time_zone",
 }
 
@@ -539,7 +539,7 @@ def sync_account_for_date(account, target_date: date) -> dict:
     }
 
 
-def sync_account_window(account, sync_type: str, start_date: date, end_date: date) -> dict:
+def sync_account_window(account, sync_type: str, start_date: date, end_date: date):
     sync_run_id = create_sync_run(account, sync_type, start_date, end_date)
     counters = {"rows_fetched": 0, "rows_inserted": 0, "rows_updated": 0, "metadata": {"dates": []}}
     try:
