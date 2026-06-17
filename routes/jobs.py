@@ -1,7 +1,8 @@
 from fastapi import APIRouter, Header, HTTPException
 
 from core.config import settings
-from services.meta_sync import run_backfill_sync, run_daily_metadata_sync, run_daily_sync, run_scheduled_sync
+from services.meta_sync import run_backfill_sync, run_daily_sync, run_scheduled_sync
+from services.meta_warehouse_sync import run_daily_metadata_sync
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 
