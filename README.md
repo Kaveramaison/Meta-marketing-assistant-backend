@@ -21,6 +21,8 @@ SUPABASE_URL
 SUPABASE_SERVICE_ROLE_KEY
 ```
 
+`SUPABASE_SERVICE_ROLE_KEY` must be the full `service_role` key value from Supabase Project Settings > API. Do not use the anon/public key, project ref, URL, or a value with `Bearer ` copied in front.
+
 Optional:
 
 ```text
@@ -112,6 +114,8 @@ python -m jobs.pull_meta scheduled
 ```
 
 This is the preferred command. The job entrypoint also supports `python jobs/pull_meta.py scheduled`, but module mode is cleaner for Railway.
+
+If Railway logs show `run_backfill_sync`, the scheduler service is still running `backfill`. Change the scheduler start command back to the scheduled command above.
 
 Cron schedule:
 
