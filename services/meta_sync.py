@@ -1,5 +1,5 @@
 import json
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 import requests
@@ -79,6 +79,43 @@ def get_accounts(backfill: bool):
         .execute()
     )
     return result.data or []
+
+
+def get_scheduled_accounts():
+    result = (
+        supabase()
+        .table("meta_accounts")
+        .select(
+            "id, client_id, ad_account_id, ad_account_name, access_token, backfill_done, "
+            "is_active, sync_frequency_hours, last_synced_at"
+        )
+        .eq("is_active", True)
+        .eq("backfill_done", True)
+        .execute()
+    )
+    return result.data or []
+
+
+def parse_supabase_datetime(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def account_is_due(account, now: datetime) -> tuple[bool, str]:
+    last_synced_at = parse_supabase_datetime(account.get("last_synced_at"))
+    if last_synced_at is None:
+        return True, "never_synced"
+
+    frequency_hours = max(to_int(account.get("sync_frequency_hours")) or 24, 1)
+    next_sync_at = last_synced_at + timedelta(hours=frequency_hours)
+    if now >= next_sync_at:
+        return True, "frequency_elapsed"
+
+    return False, f"next_sync_at={next_sync_at.isoformat()}"
 
 
 def create_sync_run(account, sync_type: str, start_date: date, end_date: date):
@@ -271,3 +308,47 @@ def run_backfill_sync(days: int | None = None) -> dict:
         result["insights"] = generate_basic_insights(account.get("client_id"))
         results.append(result)
     return {"mode": "backfill", "timezone": settings.default_timezone, "date_from": start_date.isoformat(), "date_to": end_date.isoformat(), "accounts": len(accounts), "results": results}
+
+
+def run_scheduled_sync() -> dict:
+    from services.insights import generate_basic_insights
+
+    accounts = get_scheduled_accounts()
+    now = datetime.now(timezone.utc)
+    today = app_today()
+    end_date = today - timedelta(days=1)
+    start_date = end_date - timedelta(days=max(settings.daily_lookback_days - 1, 0))
+
+    results = []
+    skipped = []
+
+    for account in accounts:
+        is_due, reason = account_is_due(account, now)
+        if not is_due:
+            skipped.append({
+                "account_id": account.get("ad_account_id"),
+                "account_name": account.get("ad_account_name"),
+                "reason": reason,
+                "sync_frequency_hours": account.get("sync_frequency_hours") or 24,
+                "last_synced_at": account.get("last_synced_at"),
+            })
+            continue
+
+        result = sync_account_window(account, "scheduled", start_date, end_date)
+        result["reason"] = reason
+        result["sync_frequency_hours"] = account.get("sync_frequency_hours") or 24
+        result["insights"] = generate_basic_insights(account.get("client_id"))
+        results.append(result)
+
+    return {
+        "mode": "scheduled",
+        "timezone": settings.default_timezone,
+        "checked_at": now.isoformat(),
+        "date_from": start_date.isoformat(),
+        "date_to": end_date.isoformat(),
+        "accounts_checked": len(accounts),
+        "accounts_synced": len(results),
+        "accounts_skipped": len(skipped),
+        "results": results,
+        "skipped": skipped,
+    }
