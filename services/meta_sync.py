@@ -8,6 +8,7 @@ from core.config import settings
 from core.supabase_client import get_supabase
 
 PERFORMANCE_TABLE = "marketing_performance_daily"
+BREAKDOWN_TABLE = "marketing_performance_breakdowns"
 BATCH_SIZE = 500
 
 LEAD_ACTION_TYPES = {
@@ -23,6 +24,12 @@ PURCHASE_ACTION_TYPES = {
     "onsite_conversion.purchase",
 }
 COUNTRY_BREAKDOWN = "country"
+BREAKDOWN_CONFIGS = {
+    "placement": "country,publisher_platform,platform_position",
+    "demographic": "country,age,gender",
+    "device": "country,impression_device",
+    "hourly": "hourly_stats_aggregated_by_advertiser_time_zone",
+}
 
 
 def to_int(value) -> int:
@@ -159,18 +166,22 @@ def finish_sync_run(sync_run_id, status: str, counters: dict, error_message: str
     supabase().table("sync_runs").update(payload).eq("id", sync_run_id).execute()
 
 
-def fetch_meta_insights(meta_account, target_date: date):
+def insight_fields() -> str:
+    return ",".join([
+        "date_start", "campaign_id", "campaign_name", "adset_id", "adset_name",
+        "ad_id", "ad_name", "impressions", "clicks", "reach", "frequency",
+        "spend", "ctr", "cpc", "actions", "action_values",
+    ])
+
+
+def fetch_meta_insights(meta_account, target_date: date, breakdowns: str = COUNTRY_BREAKDOWN):
     url = graph_url(f"{normalize_ad_account_id(meta_account['ad_account_id'])}/insights")
     params = {
         "access_token": meta_account["access_token"],
         "level": "ad",
         "time_range": json.dumps({"since": target_date.isoformat(), "until": target_date.isoformat()}),
-        "breakdowns": COUNTRY_BREAKDOWN,
-        "fields": ",".join([
-            "date_start", "campaign_id", "campaign_name", "adset_id", "adset_name",
-            "ad_id", "ad_name", "impressions", "clicks", "reach", "frequency",
-            "spend", "ctr", "cpc", "actions", "action_values",
-        ]),
+        "breakdowns": breakdowns,
+        "fields": insight_fields(),
         "limit": 500,
     }
     return fetch_meta_insights_with_params(url, params)
@@ -220,6 +231,14 @@ def nested_value(payload: dict, *path):
     return current
 
 
+def first_asset_text(asset_feed_spec: dict, key: str, value_key: str = "text") -> str | None:
+    items = asset_feed_spec.get(key) or []
+    if not items:
+        return None
+    first = items[0] if isinstance(items[0], dict) else {}
+    return first.get(value_key)
+
+
 def creative_from_ad(ad: dict) -> dict | None:
     creative = ad.get("creative") or {}
     creative_id = creative.get("id")
@@ -229,17 +248,19 @@ def creative_from_ad(ad: dict) -> dict | None:
     story_spec = creative.get("object_story_spec") or {}
     link_data = story_spec.get("link_data") or {}
     video_data = story_spec.get("video_data") or {}
+    asset_feed_spec = creative.get("asset_feed_spec") or {}
     call_to_action = (
         creative.get("call_to_action_type")
         or nested_value(link_data, "call_to_action", "type")
         or nested_value(video_data, "call_to_action", "type")
+        or first_asset_text(asset_feed_spec, "call_to_action_types", "type")
     )
 
     return {
         "creative_id": creative_id,
         "name": creative.get("name"),
-        "title": creative.get("title") or link_data.get("name") or video_data.get("title"),
-        "body": creative.get("body") or link_data.get("message") or video_data.get("message"),
+        "title": creative.get("title") or link_data.get("name") or video_data.get("title") or first_asset_text(asset_feed_spec, "titles"),
+        "body": creative.get("body") or link_data.get("message") or video_data.get("message") or first_asset_text(asset_feed_spec, "bodies"),
         "call_to_action": call_to_action,
         "image_url": creative.get("image_url") or link_data.get("image_url"),
         "video_id": creative.get("video_id") or video_data.get("video_id"),
@@ -247,6 +268,25 @@ def creative_from_ad(ad: dict) -> dict | None:
         "asset_type": creative.get("object_type"),
         "raw_payload": creative,
     }
+
+
+def fetch_ads_metadata(meta_account, ad_ids: set[str]):
+    if not ad_ids:
+        return []
+
+    base_fields = [
+        "id", "name", "campaign_id", "adset_id", "status", "effective_status",
+        "updated_time",
+    ]
+    creative_fields = "creative{id,name,title,body,call_to_action_type,image_url,thumbnail_url,video_id,object_type,object_story_spec}"
+
+    try:
+        return fetch_meta_edge(meta_account, "ads", [
+            *base_fields,
+            creative_fields.replace("}", ",asset_feed_spec}"),
+        ], ad_ids)
+    except Exception:
+        return fetch_meta_edge(meta_account, "ads", [*base_fields, creative_fields], ad_ids)
 
 
 def fetch_dimension_metadata(meta_account, rows):
@@ -265,11 +305,7 @@ def fetch_dimension_metadata(meta_account, rows):
         "start_time", "end_time", "created_time", "updated_time",
     ], adset_ids) if adset_ids else []
 
-    ads = fetch_meta_edge(meta_account, "ads", [
-        "id", "name", "campaign_id", "adset_id", "status", "effective_status",
-        "updated_time",
-        "creative{id,name,title,body,call_to_action_type,image_url,thumbnail_url,video_id,object_type,object_story_spec}",
-    ], ad_ids) if ad_ids else []
+    ads = fetch_ads_metadata(meta_account, ad_ids)
 
     return {
         "campaigns": campaigns,
@@ -287,51 +323,110 @@ def placement_value(row: dict) -> str:
     return publisher or position or "all"
 
 
-def normalize_performance_rows(meta_account, rows, ad_creatives: dict[str, str] | None = None):
+def metric_payload(meta_account, row: dict, ad_creatives: dict[str, str] | None = None) -> dict:
     ad_creatives = ad_creatives or {}
+    spend = to_float(row.get("spend"))
+    impressions = to_int(row.get("impressions"))
+    clicks = to_int(row.get("clicks"))
+    reach = to_int(row.get("reach"))
+    results = action_total(row.get("actions"), LEAD_ACTION_TYPES)
+    link_clicks = action_total(row.get("actions"), LINK_CLICK_ACTION_TYPES) or clicks
+    purchases = action_total(row.get("actions"), PURCHASE_ACTION_TYPES)
+    revenue = action_value_total(row.get("action_values"), PURCHASE_ACTION_TYPES)
+    ctr = to_float(row.get("ctr")) if row.get("ctr") is not None else ((clicks / impressions) * 100 if impressions else None)
+    cpc = to_float(row.get("cpc")) if row.get("cpc") is not None else (spend / clicks if clicks else None)
+    frequency = to_float(row.get("frequency")) if row.get("frequency") is not None else (impressions / reach if reach else None)
+    ad_id = row.get("ad_id")
+
+    return {
+        "perf_date": row.get("date_start"),
+        "client_id": meta_account["client_id"],
+        "platform": "meta",
+        "account_id": normalize_account_id(meta_account["ad_account_id"]),
+        "account_name": meta_account.get("ad_account_name"),
+        "campaign_id": row.get("campaign_id") or "all",
+        "campaign_name": row.get("campaign_name"),
+        "adset_id": row.get("adset_id") or "all",
+        "adset_name": row.get("adset_name"),
+        "ad_id": ad_id or "all",
+        "ad_name": row.get("ad_name"),
+        "creative_id": ad_creatives.get(ad_id),
+        "spend": spend,
+        "impressions": impressions,
+        "clicks": clicks,
+        "reach": reach,
+        "frequency": round_or_none(frequency),
+        "link_clicks": link_clicks,
+        "ctr": round_or_none(ctr),
+        "cpc": round_or_none(cpc),
+        "results": results,
+        "cpl": round_or_none(spend / results) if results > 0 else None,
+        "purchases": purchases,
+        "revenue": round_or_none(revenue, 2),
+    }
+
+
+def normalize_performance_rows(meta_account, rows, ad_creatives: dict[str, str] | None = None):
     output = []
     for row in rows:
-        spend = to_float(row.get("spend"))
-        impressions = to_int(row.get("impressions"))
-        clicks = to_int(row.get("clicks"))
-        reach = to_int(row.get("reach"))
-        results = action_total(row.get("actions"), LEAD_ACTION_TYPES)
-        link_clicks = action_total(row.get("actions"), LINK_CLICK_ACTION_TYPES) or clicks
-        purchases = action_total(row.get("actions"), PURCHASE_ACTION_TYPES)
-        revenue = action_value_total(row.get("action_values"), PURCHASE_ACTION_TYPES)
-        ctr = to_float(row.get("ctr")) if row.get("ctr") is not None else ((clicks / impressions) * 100 if impressions else None)
-        cpc = to_float(row.get("cpc")) if row.get("cpc") is not None else (spend / clicks if clicks else None)
-        frequency = to_float(row.get("frequency")) if row.get("frequency") is not None else (impressions / reach if reach else None)
-        ad_id = row.get("ad_id")
+        metrics = metric_payload(meta_account, row, ad_creatives)
         output.append({
-            "perf_date": row.get("date_start"),
-            "client_id": meta_account["client_id"],
-            "platform": "meta",
-            "account_id": normalize_account_id(meta_account["ad_account_id"]),
-            "account_name": meta_account.get("ad_account_name"),
+            **metrics,
             "campaign_id": row.get("campaign_id"),
-            "campaign_name": row.get("campaign_name"),
             "adset_id": row.get("adset_id"),
-            "adset_name": row.get("adset_name"),
-            "ad_id": ad_id,
-            "ad_name": row.get("ad_name"),
+            "ad_id": row.get("ad_id"),
             "country": row.get("country"),
             "placement": placement_value(row),
-            "spend": spend,
-            "impressions": impressions,
-            "clicks": clicks,
-            "reach": reach,
-            "creative_id": ad_creatives.get(ad_id),
-            "frequency": round_or_none(frequency),
-            "link_clicks": link_clicks,
-            "ctr": round_or_none(ctr),
-            "cpc": round_or_none(cpc),
-            "results": results,
-            "cpl": round_or_none(spend / results) if results > 0 else None,
-            "purchases": purchases,
-            "revenue": round_or_none(revenue, 2),
         })
     return output
+
+
+def normalize_breakdown_rows(meta_account, rows, breakdown_type: str, ad_creatives: dict[str, str] | None = None):
+    output = []
+    for row in rows:
+        publisher_platform = row.get("publisher_platform") or "all"
+        platform_position = row.get("platform_position") or "all"
+        output.append({
+            **metric_payload(meta_account, row, ad_creatives),
+            "breakdown_type": breakdown_type,
+            "country": row.get("country") or "all",
+            "publisher_platform": publisher_platform,
+            "platform_position": platform_position,
+            "placement": (
+                f"{publisher_platform}:{platform_position}"
+                if publisher_platform != "all" or platform_position != "all"
+                else "all"
+            ),
+            "age": row.get("age") or "all",
+            "gender": row.get("gender") or "all",
+            "impression_device": row.get("impression_device") or "all",
+            "hourly_window": row.get("hourly_stats_aggregated_by_advertiser_time_zone") or "all",
+            "raw_payload": row,
+        })
+    return output
+
+
+def sync_breakdown_rows(meta_account, target_date: date, ad_creatives: dict[str, str]) -> tuple[dict, list[dict]]:
+    results = {}
+    errors = []
+    for breakdown_type, breakdowns in BREAKDOWN_CONFIGS.items():
+        try:
+            raw_rows = fetch_meta_insights(meta_account, target_date, breakdowns)
+            rows = normalize_breakdown_rows(meta_account, raw_rows, breakdown_type, ad_creatives)
+            saved = upsert_rows(
+                BREAKDOWN_TABLE,
+                rows,
+                (
+                    "perf_date,client_id,platform,account_id,campaign_id,adset_id,ad_id,"
+                    "breakdown_type,country,publisher_platform,platform_position,age,gender,"
+                    "impression_device,hourly_window"
+                ),
+            )
+            results[breakdown_type] = {"rows_fetched": len(raw_rows), "rows_saved": saved}
+        except Exception as exc:
+            errors.append({"breakdown_type": breakdown_type, "error": str(exc)})
+            results[breakdown_type] = {"rows_fetched": 0, "rows_saved": 0, "error": str(exc)}
+    return results, errors
 
 
 def upsert_rows(table_name: str, rows: list[dict], on_conflict: str) -> int:
@@ -433,10 +528,13 @@ def sync_account_for_date(account, target_date: date) -> dict:
         rows,
         "perf_date,client_id,platform,account_id,campaign_id,adset_id,ad_id,country",
     )
+    breakdowns, breakdown_errors = sync_breakdown_rows(account, target_date, ad_creatives)
     return {
         "date": target_date.isoformat(),
         "rows_fetched": len(raw_rows),
         "performance_rows": performance_count,
+        "breakdowns": breakdowns,
+        "breakdown_errors": breakdown_errors,
         "dimensions": upsert_dimensions(rows, metadata),
     }
 
