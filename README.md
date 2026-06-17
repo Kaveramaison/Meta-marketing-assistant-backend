@@ -111,6 +111,8 @@ Start command:
 python -m jobs.pull_meta scheduled
 ```
 
+This is the preferred command. The job entrypoint also supports `python jobs/pull_meta.py scheduled`, but module mode is cleaner for Railway.
+
 Cron schedule:
 
 ```text
