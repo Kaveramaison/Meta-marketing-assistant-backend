@@ -29,6 +29,15 @@ BREAKDOWN_CONFIGS = {
     "demographic": "age,gender",
     "device": "impression_device",
     "hourly": "hourly_stats_aggregated_by_advertiser_time_zone",
+    "geo_region": "region",
+    "geo_city": "region,city",
+    "geo_dma": "dma",
+}
+DEFAULT_BREAKDOWNS = ["placement", "device", "demographic", "hourly"]
+GEO_GRAIN_BREAKDOWNS = {
+    "country": [],
+    "region": ["geo_region"],
+    "city": ["geo_city"],
 }
 
 
@@ -89,7 +98,10 @@ def get_accounts(backfill: bool):
     result = (
         supabase()
         .table("meta_accounts")
-        .select("id, client_id, ad_account_id, ad_account_name, access_token, backfill_done, is_active")
+        .select(
+            "id, client_id, ad_account_id, ad_account_name, access_token, backfill_done, "
+            "is_active, geo_grain, enabled_breakdowns"
+        )
         .eq("is_active", True)
         .eq("backfill_done", not backfill)
         .execute()
@@ -103,7 +115,7 @@ def get_scheduled_accounts():
         .table("meta_accounts")
         .select(
             "id, client_id, ad_account_id, ad_account_name, access_token, backfill_done, "
-            "is_active, sync_frequency_hours, last_synced_at"
+            "is_active, sync_frequency_hours, last_synced_at, geo_grain, enabled_breakdowns"
         )
         .eq("is_active", True)
         .eq("backfill_done", True)
@@ -198,6 +210,25 @@ def fetch_meta_insights_with_params(url: str, params: dict):
         url = data.get("paging", {}).get("next")
         params = None
     return rows
+
+
+def enabled_breakdowns_for_account(meta_account) -> list[str]:
+    enabled = meta_account.get("enabled_breakdowns")
+    if isinstance(enabled, str):
+        try:
+            enabled = json.loads(enabled)
+        except json.JSONDecodeError:
+            enabled = None
+    if not isinstance(enabled, list):
+        enabled = DEFAULT_BREAKDOWNS
+
+    geo_grain = (meta_account.get("geo_grain") or "country").lower()
+    requested = [*enabled, *GEO_GRAIN_BREAKDOWNS.get(geo_grain, [])]
+    return [
+        breakdown_type
+        for breakdown_type in dict.fromkeys(requested)
+        if breakdown_type in BREAKDOWN_CONFIGS
+    ]
 
 
 def fetch_meta_edge(meta_account, edge: str, fields: list[str], ids: set[str] | None = None):
@@ -390,6 +421,9 @@ def normalize_breakdown_rows(meta_account, rows, breakdown_type: str, ad_creativ
             **metric_payload(meta_account, row, ad_creatives),
             "breakdown_type": breakdown_type,
             "country": row.get("country") or "all",
+            "region": row.get("region") or "all",
+            "city": row.get("city") or "all",
+            "dma": row.get("dma") or "all",
             "publisher_platform": publisher_platform,
             "platform_position": platform_position,
             "placement": (
@@ -409,7 +443,8 @@ def normalize_breakdown_rows(meta_account, rows, breakdown_type: str, ad_creativ
 def sync_breakdown_rows(meta_account, target_date: date, ad_creatives: dict[str, str]) -> tuple[dict, list[dict]]:
     results = {}
     errors = []
-    for breakdown_type, breakdowns in BREAKDOWN_CONFIGS.items():
+    for breakdown_type in enabled_breakdowns_for_account(meta_account):
+        breakdowns = BREAKDOWN_CONFIGS[breakdown_type]
         try:
             raw_rows = fetch_meta_insights(meta_account, target_date, breakdowns)
             rows = normalize_breakdown_rows(meta_account, raw_rows, breakdown_type, ad_creatives)
@@ -418,8 +453,8 @@ def sync_breakdown_rows(meta_account, target_date: date, ad_creatives: dict[str,
                 rows,
                 (
                     "perf_date,client_id,platform,account_id,campaign_id,adset_id,ad_id,"
-                    "breakdown_type,country,publisher_platform,platform_position,age,gender,"
-                    "impression_device,hourly_window"
+                    "breakdown_type,country,region,city,dma,publisher_platform,platform_position,"
+                    "age,gender,impression_device,hourly_window"
                 ),
             )
             results[breakdown_type] = {"rows_fetched": len(raw_rows), "rows_saved": saved}
@@ -539,7 +574,7 @@ def sync_account_for_date(account, target_date: date) -> dict:
     }
 
 
-def sync_account_window(account, sync_type: str, start_date: date, end_date: date):
+def sync_account_window(account, sync_type: str, start_date: date, end_date: date) -> dict:
     sync_run_id = create_sync_run(account, sync_type, start_date, end_date)
     counters = {"rows_fetched": 0, "rows_inserted": 0, "rows_updated": 0, "metadata": {"dates": []}}
     try:
