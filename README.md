@@ -67,21 +67,63 @@ The job checks `meta_accounts.sync_frequency_hours` and `last_synced_at`, then s
 python -m jobs.pull_meta backfill --days 90
 ```
 
-## Railway scheduled update
+## Railway services
 
-Create a separate Railway cron/scheduled service that runs:
+This repository is used by two Railway services. Keep start commands in Railway service settings, not in repo config, so both services can deploy from the same repo.
+
+### Backend API service
+
+Service name:
+
+```text
+meta-marketing-assistant-backend
+```
+
+Start command:
+
+```bash
+uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}
+```
+
+Healthcheck path:
+
+```text
+/health
+```
+
+Cron schedule:
+
+```text
+disabled / empty
+```
+
+### Scheduler service
+
+Service name:
+
+```text
+agile-charm
+```
+
+Start command:
 
 ```bash
 python -m jobs.pull_meta scheduled
 ```
 
-Set its cron schedule to:
+Cron schedule:
 
 ```text
 0 * * * *
 ```
 
-Keep the main API service running `uvicorn main:app --host 0.0.0.0 --port $PORT`.
+Healthcheck path:
+
+```text
+disabled / empty
+```
+
+Serverless is not available on cron services. That is expected.
 
 ## API endpoints
 
