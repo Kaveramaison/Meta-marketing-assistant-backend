@@ -39,7 +39,13 @@ class Settings:
     cron_secret: str | None = os.getenv("CRON_SECRET")
     frontend_origins: tuple[str, ...] = tuple(list_env(
         "FRONTEND_URL",
-        "https://kavera-maison-web.vercel.app,http://localhost:3000,http://localhost:3007",
+        (
+            "https://kavera-maison-web.vercel.app,"
+            "https://kaveramaison.com,"
+            "https://www.kaveramaison.com,"
+            "http://localhost:3000,"
+            "http://localhost:3007"
+        ),
     ))
 
     @property
