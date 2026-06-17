@@ -24,6 +24,20 @@ def list_env(name: str, default: str = "") -> list[str]:
     return [item.strip() for item in raw_value.split(",") if item.strip()]
 
 
+DEFAULT_FRONTEND_ORIGINS = (
+    "https://kavera-maison-web.vercel.app",
+    "https://kaveramaison.com",
+    "https://www.kaveramaison.com",
+    "http://localhost:3000",
+    "http://localhost:3007",
+)
+
+
+def frontend_origins() -> tuple[str, ...]:
+    origins = [*DEFAULT_FRONTEND_ORIGINS, *list_env("FRONTEND_URL")]
+    return tuple(dict.fromkeys(origins))
+
+
 @dataclass(frozen=True)
 class Settings:
     supabase_url: str | None = first_env("SUPABASE_URL", "NEXT_PUBLIC_SUPABASE_URL")
@@ -37,16 +51,7 @@ class Settings:
     daily_lookback_days: int = int(os.getenv("META_DAILY_LOOKBACK_DAYS", "3"))
     backfill_days: int = int(os.getenv("META_BACKFILL_DAYS", "90"))
     cron_secret: str | None = os.getenv("CRON_SECRET")
-    frontend_origins: tuple[str, ...] = tuple(list_env(
-        "FRONTEND_URL",
-        (
-            "https://kavera-maison-web.vercel.app,"
-            "https://kaveramaison.com,"
-            "https://www.kaveramaison.com,"
-            "http://localhost:3000,"
-            "http://localhost:3007"
-        ),
-    ))
+    frontend_origins: tuple[str, ...] = frontend_origins()
 
     @property
     def supabase_ready(self) -> bool:
