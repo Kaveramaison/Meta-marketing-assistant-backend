@@ -19,6 +19,11 @@ def first_env(*names: str) -> str | None:
     return None
 
 
+def list_env(name: str, default: str = "") -> list[str]:
+    raw_value = clean_env_value(os.getenv(name)) or default
+    return [item.strip() for item in raw_value.split(",") if item.strip()]
+
+
 @dataclass(frozen=True)
 class Settings:
     supabase_url: str | None = first_env("SUPABASE_URL", "NEXT_PUBLIC_SUPABASE_URL")
@@ -32,6 +37,10 @@ class Settings:
     daily_lookback_days: int = int(os.getenv("META_DAILY_LOOKBACK_DAYS", "3"))
     backfill_days: int = int(os.getenv("META_BACKFILL_DAYS", "90"))
     cron_secret: str | None = os.getenv("CRON_SECRET")
+    frontend_origins: tuple[str, ...] = tuple(list_env(
+        "FRONTEND_URL",
+        "https://kavera-maison-web.vercel.app,http://localhost:3000,http://localhost:3007",
+    ))
 
     @property
     def supabase_ready(self) -> bool:
