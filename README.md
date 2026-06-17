@@ -47,21 +47,41 @@ python -m jobs.pull_meta daily
 
 On June 17, using `Asia/Kolkata`, this fetches through June 16. On June 18, it fetches through June 17.
 
+## Run Meta scheduled sync
+
+```bash
+python -m jobs.pull_meta scheduled
+```
+
+This is the long-term SaaS scheduler mode. Run it hourly from Railway using:
+
+```text
+0 * * * *
+```
+
+The job checks `meta_accounts.sync_frequency_hours` and `last_synced_at`, then syncs only accounts that are due.
+
 ## Run Meta backfill
 
 ```bash
 python -m jobs.pull_meta backfill --days 90
 ```
 
-## Railway daily update
+## Railway scheduled update
 
-Create a Railway cron/scheduled job that runs:
+Create a separate Railway cron/scheduled service that runs:
 
 ```bash
-python -m jobs.pull_meta daily
+python -m jobs.pull_meta scheduled
 ```
 
-Run it once per day after Meta has had time to report yesterday's data. A safe time is early morning in the account timezone.
+Set its cron schedule to:
+
+```text
+0 * * * *
+```
+
+Keep the main API service running `uvicorn main:app --host 0.0.0.0 --port $PORT`.
 
 ## API endpoints
 
@@ -72,6 +92,7 @@ GET  /dashboard/overview?client_id=...&days=30
 GET  /dashboard/insights?client_id=...
 POST /jobs/meta/daily
 POST /jobs/meta/backfill
+POST /jobs/meta/scheduled
 ```
 
 If `CRON_SECRET` is set, call job endpoints with:
