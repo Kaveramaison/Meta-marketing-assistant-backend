@@ -268,7 +268,7 @@ def fetch_dimension_metadata(meta_account, rows):
 
     ads = fetch_meta_edge(meta_account, "ads", [
         "id", "name", "campaign_id", "adset_id", "status", "effective_status",
-        "created_time", "updated_time",
+        "updated_time",
         "creative{id,name,title,body,call_to_action_type,image_url,thumbnail_url,video_id,object_type,object_story_spec,created_time}",
     ], ad_ids) if ad_ids else []
 
@@ -401,7 +401,7 @@ def upsert_dimensions(rows: list[dict], metadata: dict | None = None) -> dict:
             "campaign_id": ad.get("campaign_id"), "adset_id": ad.get("adset_id"), "ad_id": ad["id"],
             "ad_name": ad.get("name"), "creative_id": creative.get("creative_id") if creative else None,
             "status": ad.get("status"), "effective_status": ad.get("effective_status"),
-            "created_time": ad.get("created_time"), "updated_time": ad.get("updated_time"),
+            "updated_time": ad.get("updated_time"),
             "raw_payload": ad,
         }
 
