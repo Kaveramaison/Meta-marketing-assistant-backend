@@ -246,7 +246,6 @@ def creative_from_ad(ad: dict) -> dict | None:
         "thumbnail_url": creative.get("thumbnail_url"),
         "asset_type": creative.get("object_type"),
         "raw_payload": creative,
-        "created_time": creative.get("created_time"),
     }
 
 
@@ -269,7 +268,7 @@ def fetch_dimension_metadata(meta_account, rows):
     ads = fetch_meta_edge(meta_account, "ads", [
         "id", "name", "campaign_id", "adset_id", "status", "effective_status",
         "updated_time",
-        "creative{id,name,title,body,call_to_action_type,image_url,thumbnail_url,video_id,object_type,object_story_spec,created_time}",
+        "creative{id,name,title,body,call_to_action_type,image_url,thumbnail_url,video_id,object_type,object_story_spec}",
     ], ad_ids) if ad_ids else []
 
     return {
