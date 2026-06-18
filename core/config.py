@@ -47,9 +47,18 @@ class Settings:
         "SUPABASE_SECRET_KEY",
     )
     meta_graph_api_version: str = os.getenv("META_GRAPH_API_VERSION", "v20.0")
+    meta_app_id: str | None = first_env("META_APP_ID")
+    meta_app_secret: str | None = first_env("META_APP_SECRET")
+    meta_redirect_uri: str = os.getenv(
+        "META_REDIRECT_URI",
+        "https://meta-marketing-assistant-backend-production.up.railway.app/auth/meta/callback",
+    )
+    meta_oauth_state_secret: str | None = first_env("META_OAUTH_STATE_SECRET", "META_APP_SECRET")
+    app_frontend_url: str = os.getenv("APP_FRONTEND_URL", "https://www.kaveramaison.com").rstrip("/")
     default_timezone: str = os.getenv("DEFAULT_TIMEZONE", "Asia/Kolkata")
     daily_lookback_days: int = int(os.getenv("META_DAILY_LOOKBACK_DAYS", "3"))
     backfill_days: int = int(os.getenv("META_BACKFILL_DAYS", "90"))
+    initial_backfill_days: int = int(os.getenv("META_INITIAL_BACKFILL_DAYS", "180"))
     cron_secret: str | None = os.getenv("CRON_SECRET")
     frontend_origins: tuple[str, ...] = frontend_origins()
 
