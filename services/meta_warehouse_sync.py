@@ -7,9 +7,14 @@ import requests
 from core.config import settings
 from core.supabase_client import get_supabase
 from services.meta_sync import (
+    BREAKDOWN_TABLE,
+    BREAKDOWN_CONFIGS,
+    DEFAULT_BREAKDOWNS,
+    GEO_GRAIN_BREAKDOWNS,
     app_today,
     chunk_list,
     creative_from_ad,
+    fetch_meta_insights,
     normalize_account_id,
     normalize_ad_account_id,
     sync_breakdown_rows,
@@ -170,15 +175,32 @@ def fetch_full_metadata(account):
         "lifetime_budget", "budget_remaining", "pacing_type", "promoted_object", "attribution_spec",
         "targeting", "start_time", "end_time", "created_time", "updated_time",
     ])
-    creative_fields = (
-        "creative{id,name,title,body,call_to_action_type,image_url,thumbnail_url,video_id,"
-        "image_hash,object_type,object_story_id,effective_object_story_id,url_tags,"
-        "object_story_spec,asset_feed_spec}"
-    )
+    # Fetch the ad list without expanding full creative payloads. Meta rejects the
+    # expanded /ads request once story specs and flexible assets become large.
     ads = fetch_graph_edge(f"{ad_account}/ads", access_token, [
         "id", "name", "campaign_id", "adset_id", "status", "effective_status",
-        "configured_status", "created_time", "updated_time", creative_fields,
+        "configured_status", "created_time", "updated_time", "creative{id}",
     ])
+    creative_fields = [
+        "id", "name", "title", "body", "call_to_action_type", "image_url",
+        "thumbnail_url", "video_id", "image_hash", "object_type", "object_story_id",
+        "effective_object_story_id", "url_tags", "object_story_spec", "asset_feed_spec",
+    ]
+    creatives_by_id = {}
+    for creative_id in {
+        (ad.get("creative") or {}).get("id") for ad in ads if (ad.get("creative") or {}).get("id")
+    }:
+        creative, error = safe_fetch(
+            f"creative_{creative_id}",
+            lambda creative_id=creative_id: fetch_graph_object(creative_id, access_token, creative_fields),
+            fallback={"id": creative_id},
+        )
+        creatives_by_id[creative_id] = creative
+
+    for ad in ads:
+        creative_id = (ad.get("creative") or {}).get("id")
+        if creative_id:
+            ad["creative"] = creatives_by_id.get(creative_id, {"id": creative_id})
     return {
         "campaigns": campaigns,
         "ad_sets": ad_sets,
