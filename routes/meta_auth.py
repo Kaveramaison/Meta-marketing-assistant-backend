@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field
 from core.auth import WorkspaceContext, get_workspace_context
 from core.config import settings
 from core.supabase_client import get_supabase
+from services.email_notifications import send_team_email
 
 router = APIRouter(prefix="/auth/meta", tags=["meta-auth"])
 
@@ -256,6 +257,37 @@ def _pending_request(account_id: str, target_client_id: str, user_id: str) -> di
     return (result.data or [None])[0]
 
 
+def _notify_workspace_owners(request: dict, requester: WorkspaceContext):
+    recipients_result = (
+        get_supabase()
+        .table("client_users")
+        .select("email")
+        .eq("client_id", request["target_client_id"])
+        .in_("role", ["owner", "admin"])
+        .execute()
+    )
+    recipients = list(
+        dict.fromkeys(row["email"] for row in (recipients_result.data or []) if row.get("email"))
+    )
+    sent, email_error = send_team_email(
+        to=recipients,
+        subject=f"New request to join your Kavera Maison organization",
+        heading="New team access request",
+        message=(
+            f"{requester.email or 'A verified user'} requested access through Meta account "
+            f"{request.get('ad_account_name') or request['ad_account_id']}. Review the request before sharing your organization data."
+        ),
+        action_label="Review request",
+        idempotency_key=f"workspace-access-request-{request['id']}",
+    )
+    get_supabase().table("workspace_access_requests").update(
+        {
+            "owner_notified_at": datetime.now(timezone.utc).isoformat() if sent else None,
+            "owner_notification_error": email_error,
+        }
+    ).eq("id", request["id"]).execute()
+
+
 @router.get("/session/{session_id}")
 def get_meta_connection_session(
     session_id: str,
@@ -303,7 +335,7 @@ def connect_meta_accounts(
                 account_id, existing_elsewhere["client_id"], workspace.user_id
             )
             if not existing_request:
-                get_supabase().table("workspace_access_requests").insert(
+                request_result = get_supabase().table("workspace_access_requests").insert(
                     {
                         "requester_user_id": workspace.user_id,
                         "requester_client_id": workspace.client_id,
@@ -313,6 +345,7 @@ def connect_meta_accounts(
                         "ad_account_name": account["account_name"],
                     }
                 ).execute()
+                _notify_workspace_owners(request_result.data[0], workspace)
             requested_accounts.append(account_id)
             continue
 
