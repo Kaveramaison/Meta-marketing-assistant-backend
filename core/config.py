@@ -49,6 +49,7 @@ class Settings:
     meta_graph_api_version: str = os.getenv("META_GRAPH_API_VERSION", "v20.0")
     meta_app_id: str | None = first_env("META_APP_ID")
     meta_app_secret: str | None = first_env("META_APP_SECRET")
+    meta_login_config_id: str | None = first_env("META_LOGIN_CONFIG_ID")
     meta_redirect_uri: str = os.getenv(
         "META_REDIRECT_URI",
         "https://meta-marketing-assistant-backend-production.up.railway.app/auth/meta/callback",
