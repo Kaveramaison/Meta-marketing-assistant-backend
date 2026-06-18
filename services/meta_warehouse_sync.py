@@ -616,7 +616,11 @@ def sync_leads(account, forms: list[dict]):
                 "campaign_id": lead.get("campaign_id"), "campaign_name": lead.get("campaign_name"),
                 "adset_id": lead.get("adset_id"), "adset_name": lead.get("adset_name"),
                 "ad_id": lead.get("ad_id"), "ad_name": lead.get("ad_name"), "lead_created_time": lead.get("created_time"),
-                "field_data": field_data, "normalized_email": field_value(field_data, {"email", "e-mail"}),
+                "field_data": field_data,
+                "normalized_email": field_value(
+                    field_data,
+                    {"email", "e-mail", "work_email", "business_email", "company_email"},
+                ),
                 "normalized_phone": field_value(field_data, {"phone_number", "phone", "mobile"}),
                 "normalized_name": field_value(field_data, {"full_name", "name", "first_name"}),
                 "normalized_city": field_value(field_data, {"city"}), "normalized_country": field_value(field_data, {"country"}),
@@ -673,28 +677,37 @@ def fetch_pixel_stats(account, pixel_id: str, target_date: date, aggregation: st
     )
 
 
-def event_stat_count(row: dict) -> int:
-    direct = row.get("count", row.get("value", row.get("total")))
-    if direct is not None and not isinstance(direct, (list, dict)):
-        return to_int(direct)
-    series = row.get("data") or row.get("values") or []
-    return sum(to_int(item.get("value", item.get("count"))) for item in series if isinstance(item, dict))
-
-
 def normalize_event_stats(account, pixel: dict, target_date: date, aggregation: str, rows: list[dict]):
     output = []
     for row in rows:
-        name = row.get("event") or row.get("event_name") or row.get("name") or row.get("key")
-        source = row.get("event_source") or row.get("source")
-        if aggregation == "event_source" and not source:
-            source = name
-        output.append({
-            "event_date": target_date.isoformat(), "client_id": account["client_id"], "platform": "meta",
-            "account_id": normalize_account_id(account["ad_account_id"]), "source_type": "pixel",
-            "source_id": pixel["id"], "source_name": pixel.get("name"),
-            "event_name": name or "unknown", "event_source": source or "all",
-            "event_count": event_stat_count(row), "aggregation": aggregation, "raw_payload": row,
-        })
+        series = row.get("data") or row.get("values")
+        items = series if isinstance(series, list) and series else [row]
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            label = (
+                item.get("event") or item.get("event_name") or item.get("name")
+                or item.get("key") or item.get("value")
+            )
+            count = item.get("count", item.get("total"))
+            if count is None and item is row:
+                count = row.get("value")
+
+            if aggregation == "event_source":
+                event_name = "all"
+                event_source = label or row.get("event_source") or row.get("source") or "unknown"
+            else:
+                event_name = label or "unknown"
+                event_source = row.get("event_source") or row.get("source") or "all"
+
+            output.append({
+                "event_date": target_date.isoformat(), "client_id": account["client_id"], "platform": "meta",
+                "account_id": normalize_account_id(account["ad_account_id"]), "source_type": "pixel",
+                "source_id": pixel["id"], "source_name": pixel.get("name"),
+                "event_name": str(event_name), "event_source": str(event_source),
+                "event_count": to_int(count), "aggregation": aggregation,
+                "raw_payload": {"stat": item, "response": row},
+            })
     return output
 
 
@@ -711,9 +724,29 @@ def fetch_pixel_diagnostics(account, pixel_id: str):
     return [], errors
 
 
+def normalize_pixel_diagnostic(account, pixel: dict, diagnostic: dict, snapshot_date: date, index: int):
+    code = (
+        diagnostic.get("code") or diagnostic.get("key") or diagnostic.get("id")
+        or diagnostic.get("type") or diagnostic.get("name") or f"diagnostic_{index}"
+    )
+    return {
+        "snapshot_date": snapshot_date.isoformat(), "client_id": account["client_id"], "platform": "meta",
+        "account_id": normalize_account_id(account["ad_account_id"]), "source_type": "pixel",
+        "source_id": pixel["id"], "source_name": pixel.get("name"), "diagnostic_code": str(code),
+        "severity": diagnostic.get("severity") or diagnostic.get("level"),
+        "title": diagnostic.get("title") or diagnostic.get("name"),
+        "description": diagnostic.get("description") or diagnostic.get("message"),
+        "status": diagnostic.get("status") or diagnostic.get("result"),
+        "first_detected_at": parse_meta_timestamp(diagnostic.get("first_detected_at") or diagnostic.get("first_fired_time")),
+        "last_detected_at": parse_meta_timestamp(diagnostic.get("last_detected_at") or diagnostic.get("last_fired_time")),
+        "raw_payload": diagnostic,
+    }
+
+
 def sync_event_manager(account, pixels: list[dict], start_date: date, end_date: date, snapshot_date: date):
     event_rows = []
     diagnostic_rows = []
+    successful_event_partitions = []
     errors = []
     for pixel in pixels:
         current = start_date
@@ -726,25 +759,27 @@ def sync_event_manager(account, pixels: list[dict], start_date: date, end_date: 
                 if error:
                     errors.append(error)
                 else:
+                    successful_event_partitions.append((pixel["id"], current, aggregation))
                     event_rows.extend(normalize_event_stats(account, pixel, current, aggregation, stats))
             current += timedelta(days=1)
 
         diagnostics, diagnostic_errors = fetch_pixel_diagnostics(account, pixel["id"])
         errors.extend(diagnostic_errors)
         for index, diagnostic in enumerate(diagnostics):
-            code = diagnostic.get("code") or diagnostic.get("id") or diagnostic.get("type") or diagnostic.get("name") or f"diagnostic_{index}"
-            diagnostic_rows.append({
-                "snapshot_date": snapshot_date.isoformat(), "client_id": account["client_id"], "platform": "meta",
-                "account_id": normalize_account_id(account["ad_account_id"]), "source_type": "pixel",
-                "source_id": pixel["id"], "source_name": pixel.get("name"), "diagnostic_code": str(code),
-                "severity": diagnostic.get("severity") or diagnostic.get("level"),
-                "title": diagnostic.get("title") or diagnostic.get("name"),
-                "description": diagnostic.get("description") or diagnostic.get("message"),
-                "status": diagnostic.get("status"),
-                "first_detected_at": parse_meta_timestamp(diagnostic.get("first_detected_at") or diagnostic.get("first_fired_time")),
-                "last_detected_at": parse_meta_timestamp(diagnostic.get("last_detected_at") or diagnostic.get("last_fired_time")),
-                "raw_payload": diagnostic,
-            })
+            diagnostic_rows.append(normalize_pixel_diagnostic(account, pixel, diagnostic, snapshot_date, index))
+
+    account_id = normalize_account_id(account["ad_account_id"])
+    for pixel_id, event_date, aggregation in successful_event_partitions:
+        (
+            supabase().table("meta_event_daily").delete()
+            .eq("client_id", account["client_id"])
+            .eq("account_id", account_id)
+            .eq("source_type", "pixel")
+            .eq("source_id", pixel_id)
+            .eq("event_date", event_date.isoformat())
+            .eq("aggregation", aggregation)
+            .execute()
+        )
 
     source_rows = [{
         "client_id": row["client_id"], "platform": "meta", "account_id": row["account_id"],
