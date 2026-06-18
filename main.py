@@ -4,6 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from core.config import settings
 from routes.dashboard import router as dashboard_router
 from routes.jobs import router as jobs_router
+from routes.meta_auth import router as meta_auth_router
 
 app = FastAPI(title="AI Marketing OS Backend", version="0.2.0")
 
@@ -17,6 +18,7 @@ app.add_middleware(
 
 app.include_router(dashboard_router)
 app.include_router(jobs_router)
+app.include_router(meta_auth_router)
 
 
 @app.get("/")
