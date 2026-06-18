@@ -56,6 +56,10 @@ class Settings:
     )
     meta_oauth_state_secret: str | None = first_env("META_OAUTH_STATE_SECRET", "META_APP_SECRET")
     app_frontend_url: str = os.getenv("APP_FRONTEND_URL", "https://www.kaveramaison.com").rstrip("/")
+    resend_api_key: str | None = first_env("RESEND_API_KEY")
+    email_from: str = os.getenv(
+        "EMAIL_FROM", "Kavera Maison <team@kaveramaison.com>"
+    )
     default_timezone: str = os.getenv("DEFAULT_TIMEZONE", "Asia/Kolkata")
     daily_lookback_days: int = int(os.getenv("META_DAILY_LOOKBACK_DAYS", "3"))
     backfill_days: int = int(os.getenv("META_BACKFILL_DAYS", "90"))
@@ -66,6 +70,10 @@ class Settings:
     @property
     def supabase_ready(self) -> bool:
         return bool(self.supabase_url and self.supabase_service_role_key)
+
+    @property
+    def email_ready(self) -> bool:
+        return bool(self.resend_api_key)
 
 
 settings = Settings()
