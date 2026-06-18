@@ -70,8 +70,13 @@ def account_lane_is_due(account, now: datetime, last_key: str, frequency_key: st
 def upsert_rows(table_name: str, rows: list[dict], on_conflict: str) -> int:
     if not rows:
         return 0
+    conflict_fields = [field.strip() for field in on_conflict.split(",")]
+    deduplicated = {}
+    for row in rows:
+        deduplicated[tuple(row.get(field) for field in conflict_fields)] = row
+
     total = 0
-    for batch in chunk_list(rows, BATCH_SIZE):
+    for batch in chunk_list(list(deduplicated.values()), BATCH_SIZE):
         result = supabase().table(table_name).upsert(batch, on_conflict=on_conflict).execute()
         total += len(result.data or [])
     return total
