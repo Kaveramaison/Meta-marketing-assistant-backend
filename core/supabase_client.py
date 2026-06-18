@@ -92,8 +92,21 @@ class RestQuery:
         self.params[column] = f"eq.{self._format_value(value)}"
         return self
 
+    def gt(self, column: str, value):
+        self.params[column] = f"gt.{self._format_value(value)}"
+        return self
+
     def gte(self, column: str, value):
         self.params[column] = f"gte.{self._format_value(value)}"
+        return self
+
+    def ilike(self, column: str, value):
+        self.params[column] = f"ilike.{self._format_value(value)}"
+        return self
+
+    def in_(self, column: str, values):
+        formatted_values = ",".join(self._format_value(value) for value in values)
+        self.params[column] = f"in.({formatted_values})"
         return self
 
     def limit(self, count: int):
