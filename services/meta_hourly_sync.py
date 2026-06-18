@@ -36,6 +36,7 @@ def run_lead_sync_for_due_accounts(now: datetime):
 
         forms, error = safe_fetch("leadgen_forms", lambda account=account: fetch_lead_forms(account))
         errors = [error] if error else []
+        errors.extend(account.get("_lead_form_errors") or [])
         result = {
             "account_id": account.get("ad_account_id"),
             "account_name": account.get("ad_account_name"),
