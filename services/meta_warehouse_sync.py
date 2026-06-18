@@ -21,6 +21,14 @@ from services.meta_sync import (
 )
 
 BATCH_SIZE = 500
+ACTION_BREAKDOWNS = (
+    "action_destination",
+    "action_device",
+    "action_target_id",
+    "action_reaction",
+    "action_video_type",
+)
+ACTION_ATTRIBUTION_WINDOWS = ("1d_view", "7d_click")
 
 
 def supabase():
@@ -39,6 +47,12 @@ def to_float(value) -> float:
         return float(value or 0)
     except (TypeError, ValueError):
         return 0.0
+
+
+def related_id(value):
+    if isinstance(value, dict):
+        return value.get("id")
+    return str(value) if value else None
 
 
 def graph_url(path: str) -> str:
@@ -410,7 +424,15 @@ def sync_creative_tables(account, ads: list[dict]):
     }
 
 
-def fetch_action_insights(account, target_date: date):
+def fetch_action_insights(account, target_date: date, action_breakdown: str | None = None):
+    params = {
+        "level": "ad",
+        "time_increment": 1,
+        "time_range": json.dumps({"since": target_date.isoformat(), "until": target_date.isoformat()}),
+        "action_attribution_windows": json.dumps(list(ACTION_ATTRIBUTION_WINDOWS)),
+    }
+    if action_breakdown:
+        params["action_breakdowns"] = json.dumps(["action_type", action_breakdown])
     return fetch_graph_edge(
         normalize_ad_account_id(account["ad_account_id"]) + "/insights",
         account["access_token"],
@@ -418,51 +440,70 @@ def fetch_action_insights(account, target_date: date):
             "date_start", "campaign_id", "campaign_name", "adset_id", "adset_name",
             "ad_id", "ad_name", "actions", "action_values", "cost_per_action_type",
         ],
-        {
-            "level": "ad",
-            "time_increment": 1,
-            "time_range": json.dumps({"since": target_date.isoformat(), "until": target_date.isoformat()}),
-        },
+        params,
     )
 
 
-def sync_action_insights(account, target_date: date):
-    rows = fetch_action_insights(account, target_date)
+def action_metric(items: list[dict], action_type: str, window: str):
+    item = next((item for item in items or [] if item.get("action_type") == action_type), {})
+    key = "value" if window == "default" else window
+    value = item.get(key)
+    return None if value is None else to_float(value)
+
+
+def normalize_action_insights(account, target_date: date, rows: list[dict]):
     output = []
     for row in rows:
-        costs = {
-            item.get("action_type"): to_float(item.get("value"))
-            for item in row.get("cost_per_action_type") or [] if item.get("action_type")
-        }
-        values = {
-            item.get("action_type"): to_float(item.get("value"))
-            for item in row.get("action_values") or [] if item.get("action_type")
-        }
         for action in row.get("actions") or []:
             action_type = action.get("action_type")
             if not action_type:
                 continue
-            output.append({
-                "perf_date": row.get("date_start") or target_date.isoformat(),
-                "client_id": account["client_id"], "platform": "meta",
-                "account_id": normalize_account_id(account["ad_account_id"]),
-                "campaign_id": row.get("campaign_id") or "all", "campaign_name": row.get("campaign_name"),
-                "adset_id": row.get("adset_id") or "all", "adset_name": row.get("adset_name"),
-                "ad_id": row.get("ad_id") or "all", "ad_name": row.get("ad_name"),
-                "action_type": action_type, "action_destination": action.get("action_destination") or "all",
-                "action_device": action.get("action_device") or "all",
-                "action_target_id": action.get("action_target_id") or "all",
-                "action_reaction": action.get("action_reaction") or "all",
-                "action_video_type": action.get("action_video_type") or "all",
-                "value": to_float(action.get("value")), "cost": costs.get(action_type),
-                "conversion_value": values.get(action_type, 0),
-                "attribution_window": action.get("attribution_window") or "default",
-                "raw_payload": {"action": action, "costs": row.get("cost_per_action_type"), "values": row.get("action_values")},
-            })
-    return upsert_rows(
+            windows = ["default", *[window for window in ACTION_ATTRIBUTION_WINDOWS if action.get(window) is not None]]
+            for window in windows:
+                value_key = "value" if window == "default" else window
+                output.append({
+                    "perf_date": row.get("date_start") or target_date.isoformat(),
+                    "client_id": account["client_id"], "platform": "meta",
+                    "account_id": normalize_account_id(account["ad_account_id"]),
+                    "campaign_id": row.get("campaign_id") or "all", "campaign_name": row.get("campaign_name"),
+                    "adset_id": row.get("adset_id") or "all", "adset_name": row.get("adset_name"),
+                    "ad_id": row.get("ad_id") or "all", "ad_name": row.get("ad_name"),
+                    "action_type": action_type, "action_destination": action.get("action_destination") or "all",
+                    "action_device": action.get("action_device") or "all",
+                    "action_target_id": action.get("action_target_id") or "all",
+                    "action_reaction": action.get("action_reaction") or "all",
+                    "action_video_type": action.get("action_video_type") or "all",
+                    "value": to_float(action.get(value_key)),
+                    "cost": action_metric(row.get("cost_per_action_type") or [], action_type, window),
+                    "conversion_value": action_metric(row.get("action_values") or [], action_type, window) or 0,
+                    "attribution_window": window,
+                    "raw_payload": {
+                        "action": action,
+                        "costs": row.get("cost_per_action_type"),
+                        "values": row.get("action_values"),
+                    },
+                })
+    return output
+
+
+def sync_action_insights(account, target_date: date):
+    output = []
+    errors = []
+    for breakdown in (None, *ACTION_BREAKDOWNS):
+        label = breakdown or "base"
+        rows, error = safe_fetch(
+            f"actions_{label}_{target_date.isoformat()}",
+            lambda breakdown=breakdown: fetch_action_insights(account, target_date, breakdown),
+        )
+        if error:
+            errors.append(error)
+            continue
+        output.extend(normalize_action_insights(account, target_date, rows))
+    saved = upsert_rows(
         "meta_action_daily", output,
         "perf_date,client_id,account_id,campaign_id,adset_id,ad_id,action_type,action_destination,action_device,action_target_id,action_reaction,action_video_type,attribution_window",
     )
+    return {"rows_saved": saved, "errors": errors}
 
 
 def discover_managed_pages(account):
@@ -596,7 +637,138 @@ def sync_leads(account, forms: list[dict]):
     }
 
 
-def sync_account_assets(account, metadata: dict, forms: list[dict], snapshot_date: date):
+def fetch_pixel_details(account, pixels: list[dict]):
+    groups = (
+        ["id", "name", "last_fired_time", "is_unavailable", "creation_time"],
+        ["id", "data_use_setting", "enable_automatic_matching", "automatic_matching_fields", "first_party_cookie_status"],
+        ["id", "owner_ad_account", "owner_business"],
+    )
+    errors = []
+    enriched = []
+    for pixel in pixels:
+        combined = dict(pixel)
+        for index, fields in enumerate(groups):
+            details, error = safe_fetch(
+                f"pixel_{pixel.get('id')}_details_{index}",
+                lambda fields=fields, pixel_id=pixel.get("id"): fetch_graph_object(pixel_id, account["access_token"], fields),
+                fallback={},
+            )
+            if error:
+                errors.append(error)
+            else:
+                combined.update(details)
+        enriched.append(combined)
+    return enriched, errors
+
+
+def fetch_pixel_stats(account, pixel_id: str, target_date: date, aggregation: str):
+    start = datetime.combine(target_date, datetime.min.time(), tzinfo=timezone.utc)
+    end = start + timedelta(days=1)
+    return fetch_graph_edge(
+        f"{pixel_id}/stats", account["access_token"], params={
+            "aggregation": aggregation,
+            "start_time": int(start.timestamp()),
+            "end_time": int(end.timestamp()),
+        },
+    )
+
+
+def event_stat_count(row: dict) -> int:
+    direct = row.get("count", row.get("value", row.get("total")))
+    if direct is not None and not isinstance(direct, (list, dict)):
+        return to_int(direct)
+    series = row.get("data") or row.get("values") or []
+    return sum(to_int(item.get("value", item.get("count"))) for item in series if isinstance(item, dict))
+
+
+def normalize_event_stats(account, pixel: dict, target_date: date, aggregation: str, rows: list[dict]):
+    output = []
+    for row in rows:
+        name = row.get("event") or row.get("event_name") or row.get("name") or row.get("key")
+        source = row.get("event_source") or row.get("source")
+        if aggregation == "event_source" and not source:
+            source = name
+        output.append({
+            "event_date": target_date.isoformat(), "client_id": account["client_id"], "platform": "meta",
+            "account_id": normalize_account_id(account["ad_account_id"]), "source_type": "pixel",
+            "source_id": pixel["id"], "source_name": pixel.get("name"),
+            "event_name": name or "unknown", "event_source": source or "all",
+            "event_count": event_stat_count(row), "aggregation": aggregation, "raw_payload": row,
+        })
+    return output
+
+
+def fetch_pixel_diagnostics(account, pixel_id: str):
+    errors = []
+    for edge in ("diagnostics", "da_checks"):
+        rows, error = safe_fetch(
+            f"pixel_{pixel_id}_{edge}",
+            lambda edge=edge: fetch_graph_edge(f"{pixel_id}/{edge}", account["access_token"]),
+        )
+        if not error:
+            return rows, errors
+        errors.append(error)
+    return [], errors
+
+
+def sync_event_manager(account, pixels: list[dict], start_date: date, end_date: date, snapshot_date: date):
+    event_rows = []
+    diagnostic_rows = []
+    errors = []
+    for pixel in pixels:
+        current = start_date
+        while current <= end_date:
+            for aggregation in ("event", "event_source"):
+                stats, error = safe_fetch(
+                    f"pixel_{pixel.get('id')}_{aggregation}_{current.isoformat()}",
+                    lambda pixel_id=pixel.get("id"), current=current, aggregation=aggregation: fetch_pixel_stats(account, pixel_id, current, aggregation),
+                )
+                if error:
+                    errors.append(error)
+                else:
+                    event_rows.extend(normalize_event_stats(account, pixel, current, aggregation, stats))
+            current += timedelta(days=1)
+
+        diagnostics, diagnostic_errors = fetch_pixel_diagnostics(account, pixel["id"])
+        errors.extend(diagnostic_errors)
+        for index, diagnostic in enumerate(diagnostics):
+            code = diagnostic.get("code") or diagnostic.get("id") or diagnostic.get("type") or diagnostic.get("name") or f"diagnostic_{index}"
+            diagnostic_rows.append({
+                "snapshot_date": snapshot_date.isoformat(), "client_id": account["client_id"], "platform": "meta",
+                "account_id": normalize_account_id(account["ad_account_id"]), "source_type": "pixel",
+                "source_id": pixel["id"], "source_name": pixel.get("name"), "diagnostic_code": str(code),
+                "severity": diagnostic.get("severity") or diagnostic.get("level"),
+                "title": diagnostic.get("title") or diagnostic.get("name"),
+                "description": diagnostic.get("description") or diagnostic.get("message"),
+                "status": diagnostic.get("status"),
+                "first_detected_at": parse_meta_timestamp(diagnostic.get("first_detected_at") or diagnostic.get("first_fired_time")),
+                "last_detected_at": parse_meta_timestamp(diagnostic.get("last_detected_at") or diagnostic.get("last_fired_time")),
+                "raw_payload": diagnostic,
+            })
+
+    source_rows = [{
+        "client_id": row["client_id"], "platform": "meta", "account_id": row["account_id"],
+        "source_type": row["source_type"], "source_id": row["source_id"], "source_name": row.get("source_name"),
+        "event_name": row["event_name"], "setup_status": "active", "raw_payload": row.get("raw_payload"),
+    } for row in event_rows if row.get("event_name") != "unknown"]
+    return {
+        "event_daily": upsert_rows(
+            "meta_event_daily", event_rows,
+            "event_date,client_id,account_id,source_type,source_id,event_name,event_source",
+        ),
+        "event_diagnostics": upsert_rows(
+            "meta_event_diagnostics_daily", diagnostic_rows,
+            "snapshot_date,client_id,account_id,source_type,source_id,diagnostic_code",
+        ),
+        "event_source_events": upsert_rows(
+            "meta_event_sources", source_rows,
+            "client_id,account_id,source_type,source_id,event_name",
+        ),
+        "event_manager_errors": errors,
+    }
+
+
+def sync_account_assets(account, metadata: dict, forms: list[dict], snapshot_date: date, start_date: date, end_date: date):
     account_id = normalize_account_id(account["ad_account_id"])
     errors = []
     if account.get("_managed_pages_error"):
@@ -613,9 +785,20 @@ def sync_account_assets(account, metadata: dict, forms: list[dict], snapshot_dat
     ]))
     if error:
         errors.append(error)
+    pixels, pixel_detail_errors = fetch_pixel_details(account, pixels)
+    errors.extend(pixel_detail_errors)
     pixel_rows = [{
         "client_id": account["client_id"], "platform": "meta", "account_id": account_id,
         "pixel_id": pixel["id"], "pixel_name": pixel.get("name"),
+        "dataset_id": pixel.get("dataset_id") or pixel["id"],
+        "dataset_name": pixel.get("dataset_name") or pixel.get("name"),
+        "owner_business_id": related_id(pixel.get("owner_business")),
+        "owner_ad_account_id": related_id(pixel.get("owner_ad_account")),
+        "creation_time": parse_meta_timestamp(pixel.get("creation_time")),
+        "data_use_setting": pixel.get("data_use_setting"),
+        "automatic_matching_enabled": pixel.get("enable_automatic_matching"),
+        "automatic_matching_fields": pixel.get("automatic_matching_fields"),
+        "first_party_cookie_status": pixel.get("first_party_cookie_status"),
         "last_fired_time": parse_meta_timestamp(pixel.get("last_fired_time")),
         "is_unavailable": pixel.get("is_unavailable"), "code": pixel.get("code"), "raw_payload": pixel,
     } for pixel in pixels if pixel.get("id")]
@@ -682,12 +865,15 @@ def sync_account_assets(account, metadata: dict, forms: list[dict], snapshot_dat
                 "status": "active", "metadata": {"tasks": page.get("tasks") or []},
                 "raw_payload": {key: value for key, value in page.items() if key != "access_token"},
             })
+    event_manager = sync_event_manager(account, pixels, start_date, end_date, snapshot_date)
+    errors.extend(event_manager.get("event_manager_errors") or [])
     return {
         "pixels": upsert_rows("meta_pixels", pixel_rows, "client_id,account_id,pixel_id"),
         "event_sources": upsert_rows("meta_event_sources", event_rows, "client_id,account_id,source_type,source_id,event_name"),
         "activities": upsert_rows("meta_account_activities", activity_rows, "client_id,account_id,activity_id"),
         "business_assets": upsert_rows("meta_business_assets", assets, "client_id,account_id,asset_type,asset_id"),
         "account_health": upsert_rows("meta_account_health_snapshots", [health], "snapshot_date,client_id,account_id"),
+        **event_manager,
         "asset_errors": errors,
     }
 
@@ -723,16 +909,17 @@ def sync_one_account(account, start_date: date, end_date: date):
         current = start_date
         while current <= end_date:
             breakdowns, errors = sync_breakdown_rows(account, current, ad_creatives)
-            action_rows, action_error = safe_fetch(
+            action_result, action_error = safe_fetch(
                 f"actions_{current.isoformat()}",
                 lambda current=current: sync_action_insights(account, current),
-                fallback=0,
+                fallback={"rows_saved": 0, "errors": []},
             )
             if action_error:
                 errors.append(action_error)
+            errors.extend(action_result.get("errors") or [])
             counters["metadata"]["dates"].append({
                 "date": current.isoformat(), "breakdowns": breakdowns,
-                "action_rows": action_rows, "errors": errors,
+                "action_rows": action_result.get("rows_saved", 0), "errors": errors,
             })
             counters["metadata"]["errors"].extend(errors)
             current += timedelta(days=1)
@@ -744,7 +931,7 @@ def sync_one_account(account, start_date: date, end_date: date):
         counters["metadata"]["lead_forms"] = sync_lead_forms(account, forms)
         counters["metadata"].update(sync_leads(account, forms))
         counters["metadata"]["form_health"] = sync_form_health(account, forms, snapshot_date)
-        counters["metadata"].update(sync_account_assets(account, metadata, forms, snapshot_date))
+        counters["metadata"].update(sync_account_assets(account, metadata, forms, snapshot_date, start_date, end_date))
 
         now_iso = datetime.utcnow().isoformat()
         supabase().table("meta_accounts").update({
