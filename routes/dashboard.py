@@ -61,6 +61,47 @@ def insights(
 
 @router.get("/context")
 def context(workspace: WorkspaceContext = Depends(get_workspace_context)):
+    memberships_result = (
+        get_supabase()
+        .table("client_users")
+        .select("client_id, role")
+        .eq("user_id", workspace.user_id)
+        .order("created_at")
+        .execute()
+    )
+    workspaces = []
+    for membership in memberships_result.data or []:
+        client_result = (
+            get_supabase()
+            .table("clients")
+            .select("client_id, client_name")
+            .eq("client_id", membership["client_id"])
+            .limit(1)
+            .execute()
+        )
+        if client_result.data:
+            workspaces.append({**client_result.data[0], "role": membership["role"]})
+
+    outgoing_result = (
+        get_supabase()
+        .table("workspace_access_requests")
+        .select("id, ad_account_id, ad_account_name, status, created_at")
+        .eq("requester_user_id", workspace.user_id)
+        .eq("status", "pending")
+        .order("created_at", desc=True)
+        .execute()
+    )
+    incoming_count = 0
+    if workspace.role in {"owner", "admin"}:
+        incoming_result = (
+            get_supabase()
+            .table("workspace_access_requests")
+            .select("id")
+            .eq("target_client_id", workspace.client_id)
+            .eq("status", "pending")
+            .execute()
+        )
+        incoming_count = len(incoming_result.data or [])
     accounts_result = (
         get_supabase()
         .table("meta_accounts")
@@ -79,6 +120,9 @@ def context(workspace: WorkspaceContext = Depends(get_workspace_context)):
             "role": workspace.role,
         },
         "user": {"id": workspace.user_id, "email": workspace.email},
+        "workspaces": workspaces,
+        "pending_access_requests": outgoing_result.data or [],
+        "pending_team_requests": incoming_count,
         "meta_accounts": [
             {
                 "account_id": account["ad_account_id"],
