@@ -34,6 +34,13 @@ def to_int(value) -> int:
         return 0
 
 
+def to_float(value) -> float:
+    try:
+        return float(value or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def graph_url(path: str) -> str:
     return f"https://graph.facebook.com/{settings.meta_graph_api_version}/{path.lstrip('/')}"
 
@@ -403,11 +410,112 @@ def sync_creative_tables(account, ads: list[dict]):
     }
 
 
+def fetch_action_insights(account, target_date: date):
+    return fetch_graph_edge(
+        normalize_ad_account_id(account["ad_account_id"]) + "/insights",
+        account["access_token"],
+        [
+            "date_start", "campaign_id", "campaign_name", "adset_id", "adset_name",
+            "ad_id", "ad_name", "actions", "action_values", "cost_per_action_type",
+        ],
+        {
+            "level": "ad",
+            "time_increment": 1,
+            "time_range": json.dumps({"since": target_date.isoformat(), "until": target_date.isoformat()}),
+        },
+    )
+
+
+def sync_action_insights(account, target_date: date):
+    rows = fetch_action_insights(account, target_date)
+    output = []
+    for row in rows:
+        costs = {
+            item.get("action_type"): to_float(item.get("value"))
+            for item in row.get("cost_per_action_type") or [] if item.get("action_type")
+        }
+        values = {
+            item.get("action_type"): to_float(item.get("value"))
+            for item in row.get("action_values") or [] if item.get("action_type")
+        }
+        for action in row.get("actions") or []:
+            action_type = action.get("action_type")
+            if not action_type:
+                continue
+            output.append({
+                "perf_date": row.get("date_start") or target_date.isoformat(),
+                "client_id": account["client_id"], "platform": "meta",
+                "account_id": normalize_account_id(account["ad_account_id"]),
+                "campaign_id": row.get("campaign_id") or "all", "campaign_name": row.get("campaign_name"),
+                "adset_id": row.get("adset_id") or "all", "adset_name": row.get("adset_name"),
+                "ad_id": row.get("ad_id") or "all", "ad_name": row.get("ad_name"),
+                "action_type": action_type, "action_destination": action.get("action_destination") or "all",
+                "action_device": action.get("action_device") or "all",
+                "action_target_id": action.get("action_target_id") or "all",
+                "action_reaction": action.get("action_reaction") or "all",
+                "action_video_type": action.get("action_video_type") or "all",
+                "value": to_float(action.get("value")), "cost": costs.get(action_type),
+                "conversion_value": values.get(action_type, 0),
+                "attribution_window": action.get("attribution_window") or "default",
+                "raw_payload": {"action": action, "costs": row.get("cost_per_action_type"), "values": row.get("action_values")},
+            })
+    return upsert_rows(
+        "meta_action_daily", output,
+        "perf_date,client_id,account_id,campaign_id,adset_id,ad_id,action_type,action_destination,action_device,action_target_id,action_reaction,action_video_type,attribution_window",
+    )
+
+
+def discover_managed_pages(account):
+    pages, error = safe_fetch(
+        "managed_pages",
+        lambda: fetch_graph_edge("me/accounts", account["access_token"], ["id", "name", "access_token", "tasks"]),
+    )
+    pages_by_id = {page["id"]: page for page in pages if page.get("id")}
+
+    # Creative story specs provide a fallback when /me/accounts is restricted.
+    result = (
+        supabase()
+        .table("creatives")
+        .select("raw_payload")
+        .eq("client_id", account["client_id"])
+        .eq("account_id", normalize_account_id(account["ad_account_id"]))
+        .execute()
+    )
+    for row in result.data or []:
+        page_id = ((row.get("raw_payload") or {}).get("object_story_spec") or {}).get("page_id")
+        if page_id and page_id not in pages_by_id:
+            pages_by_id[page_id] = {"id": page_id, "access_token": account["access_token"]}
+
+    account["_managed_pages"] = list(pages_by_id.values())
+    account["_managed_pages_error"] = error
+    return account["_managed_pages"]
+
+
 def fetch_lead_forms(account):
-    return fetch_graph_edge(normalize_ad_account_id(account["ad_account_id"]) + "/leadgen_forms", account["access_token"], [
+    fields = [
         "id", "name", "status", "locale", "questions", "privacy_policy_url",
         "thank_you_page", "context_card", "follow_up_action_url", "created_time",
-    ])
+    ]
+    forms_by_id = {}
+    errors = []
+    for page in discover_managed_pages(account):
+        page_id = page.get("id")
+        page_token = page.get("access_token") or account["access_token"]
+        forms, error = safe_fetch(
+            f"page_{page_id}_leadgen_forms",
+            lambda page_id=page_id, page_token=page_token: fetch_graph_edge(f"{page_id}/leadgen_forms", page_token, fields),
+        )
+        if error:
+            errors.append(error)
+            continue
+        for form in forms:
+            if form.get("id"):
+                form["_page_id"] = page_id
+                form["_page_name"] = page.get("name")
+                form["_page_access_token"] = page_token
+                forms_by_id[form["id"]] = form
+    account["_lead_form_errors"] = errors
+    return list(forms_by_id.values())
 
 
 def sync_lead_forms(account, forms: list[dict]):
@@ -417,17 +525,19 @@ def sync_lead_forms(account, forms: list[dict]):
         rows.append({
             "client_id": account["client_id"], "platform": "meta",
             "account_id": normalize_account_id(account["ad_account_id"]),
+            "page_id": form.get("_page_id"), "page_name": form.get("_page_name"),
             "form_id": form["id"], "form_name": form.get("name"), "status": form.get("status"),
             "locale": form.get("locale"), "question_count": len(questions), "questions": questions,
             "privacy_policy_url": form.get("privacy_policy_url"), "thank_you_screen": form.get("thank_you_page"),
             "context_card": form.get("context_card"), "follow_up_action_url": form.get("follow_up_action_url"),
-            "created_time": form.get("created_time"), "raw_payload": form,
+            "created_time": form.get("created_time"),
+            "raw_payload": {key: value for key, value in form.items() if not key.startswith("_")},
         })
     return upsert_rows("meta_lead_forms", rows, "client_id,account_id,form_id")
 
 
-def fetch_form_leads(account, form_id: str):
-    return fetch_graph_edge(f"{form_id}/leads", account["access_token"], [
+def fetch_form_leads(account, form: dict):
+    return fetch_graph_edge(f"{form['id']}/leads", form.get("_page_access_token") or account["access_token"], [
         "id", "created_time", "field_data", "ad_id", "ad_name", "adset_id", "adset_name",
         "campaign_id", "campaign_name", "form_id", "is_organic", "platform",
     ])
@@ -447,7 +557,10 @@ def sync_leads(account, forms: list[dict]):
     errors = []
     forms_by_id = {form.get("id"): form for form in forms}
     for form in forms:
-        raw_leads, error = safe_fetch(f"lead_form_{form.get('id')}", lambda form_id=form.get("id"): fetch_form_leads(account, form_id))
+        raw_leads, error = safe_fetch(
+            f"lead_form_{form.get('id')}",
+            lambda form=form: fetch_form_leads(account, form),
+        )
         if error:
             errors.append(error)
             continue
@@ -458,6 +571,7 @@ def sync_leads(account, forms: list[dict]):
             leads.append({
                 "client_id": account["client_id"], "platform": "meta", "account_id": normalize_account_id(account["ad_account_id"]),
                 "lead_id": lead["id"], "form_id": lead.get("form_id"), "form_name": form_ref.get("name"),
+                "page_id": form_ref.get("_page_id"), "page_name": form_ref.get("_page_name"),
                 "campaign_id": lead.get("campaign_id"), "campaign_name": lead.get("campaign_name"),
                 "adset_id": lead.get("adset_id"), "adset_name": lead.get("adset_name"),
                 "ad_id": lead.get("ad_id"), "ad_name": lead.get("ad_name"), "lead_created_time": lead.get("created_time"),
@@ -485,6 +599,9 @@ def sync_leads(account, forms: list[dict]):
 def sync_account_assets(account, metadata: dict, forms: list[dict], snapshot_date: date):
     account_id = normalize_account_id(account["ad_account_id"])
     errors = []
+    if account.get("_managed_pages_error"):
+        errors.append(account["_managed_pages_error"])
+    errors.extend(account.get("_lead_form_errors") or [])
     account_info, error = safe_fetch("ad_account", lambda: fetch_graph_object(normalize_ad_account_id(account["ad_account_id"]), account["access_token"], [
         "id", "name", "account_status", "disable_reason", "currency", "timezone_name",
         "timezone_offset_hours_utc", "amount_spent", "spend_cap", "balance", "business",
@@ -557,6 +674,14 @@ def sync_account_assets(account, metadata: dict, forms: list[dict], snapshot_dat
                 "asset_type": "pixel", "asset_id": pixel["id"], "asset_name": pixel.get("name"),
                 "status": "unavailable" if pixel.get("is_unavailable") else "active", "raw_payload": pixel,
             })
+    for page in account.get("_managed_pages") or []:
+        if page.get("id"):
+            assets.append({
+                "client_id": account["client_id"], "platform": "meta", "account_id": account_id,
+                "asset_type": "page", "asset_id": page["id"], "asset_name": page.get("name"),
+                "status": "active", "metadata": {"tasks": page.get("tasks") or []},
+                "raw_payload": {key: value for key, value in page.items() if key != "access_token"},
+            })
     return {
         "pixels": upsert_rows("meta_pixels", pixel_rows, "client_id,account_id,pixel_id"),
         "event_sources": upsert_rows("meta_event_sources", event_rows, "client_id,account_id,source_type,source_id,event_name"),
@@ -598,13 +723,24 @@ def sync_one_account(account, start_date: date, end_date: date):
         current = start_date
         while current <= end_date:
             breakdowns, errors = sync_breakdown_rows(account, current, ad_creatives)
-            counters["metadata"]["dates"].append({"date": current.isoformat(), "breakdowns": breakdowns, "errors": errors})
+            action_rows, action_error = safe_fetch(
+                f"actions_{current.isoformat()}",
+                lambda current=current: sync_action_insights(account, current),
+                fallback=0,
+            )
+            if action_error:
+                errors.append(action_error)
+            counters["metadata"]["dates"].append({
+                "date": current.isoformat(), "breakdowns": breakdowns,
+                "action_rows": action_rows, "errors": errors,
+            })
             counters["metadata"]["errors"].extend(errors)
             current += timedelta(days=1)
 
         forms, error = safe_fetch("leadgen_forms", lambda: fetch_lead_forms(account))
         if error:
             counters["metadata"]["errors"].append(error)
+        counters["metadata"]["errors"].extend(account.get("_lead_form_errors") or [])
         counters["metadata"]["lead_forms"] = sync_lead_forms(account, forms)
         counters["metadata"].update(sync_leads(account, forms))
         counters["metadata"]["form_health"] = sync_form_health(account, forms, snapshot_date)
