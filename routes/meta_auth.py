@@ -116,15 +116,22 @@ def start_meta_oauth(workspace: WorkspaceContext = Depends(get_workspace_context
         "leads_retrieval",
         "pages_manage_metadata",
     ]
-    query = urlencode(
-        {
-            "client_id": settings.meta_app_id,
-            "redirect_uri": settings.meta_redirect_uri,
-            "state": state_value,
-            "response_type": "code",
-            "scope": ",".join(scopes),
-        }
-    )
+    oauth_params = {
+        "client_id": settings.meta_app_id,
+        "redirect_uri": settings.meta_redirect_uri,
+        "state": state_value,
+        "response_type": "code",
+    }
+    if settings.meta_login_config_id:
+        oauth_params.update(
+            {
+                "config_id": settings.meta_login_config_id,
+                "override_default_response_type": "true",
+            }
+        )
+    else:
+        oauth_params["scope"] = ",".join(scopes)
+    query = urlencode(oauth_params)
     return {"authorization_url": f"https://www.facebook.com/{settings.meta_graph_api_version}/dialog/oauth?{query}"}
 
 
