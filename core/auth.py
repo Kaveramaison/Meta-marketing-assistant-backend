@@ -27,6 +27,7 @@ def _access_token(authorization: str | None) -> str:
 
 def get_workspace_context(
     authorization: str | None = Header(default=None),
+    x_workspace_id: str | None = Header(default=None, alias="X-Workspace-Id"),
 ) -> WorkspaceContext:
     token = _access_token(authorization)
     response = requests.get(
@@ -44,15 +45,15 @@ def get_workspace_context(
         )
 
     user = response.json()
-    membership_result = (
+    membership_query = (
         get_supabase()
         .table("client_users")
         .select("client_id, role")
         .eq("user_id", user["id"])
-        .order("created_at")
-        .limit(1)
-        .execute()
     )
+    if x_workspace_id:
+        membership_query = membership_query.eq("client_id", x_workspace_id)
+    membership_result = membership_query.order("created_at").limit(1).execute()
     memberships = membership_result.data or []
     if not memberships:
         raise HTTPException(
@@ -84,3 +85,12 @@ def get_workspace_context(
         client_name=client["client_name"],
         role=membership["role"],
     )
+
+
+def require_workspace_manager(workspace: WorkspaceContext) -> WorkspaceContext:
+    if workspace.role not in {"owner", "admin"}:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Owner or admin access is required.",
+        )
+    return workspace

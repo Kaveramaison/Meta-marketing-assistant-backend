@@ -226,13 +226,58 @@ def _connection_session(session_id: str, workspace: WorkspaceContext) -> dict:
     return connection
 
 
+def _connected_workspace(account_id: str, current_client_id: str) -> dict | None:
+    result = (
+        get_supabase()
+        .table("meta_accounts")
+        .select("id, client_id, ad_account_id, ad_account_name")
+        .eq("ad_account_id", account_id)
+        .limit(10)
+        .execute()
+    )
+    return next(
+        (row for row in (result.data or []) if row["client_id"] != current_client_id),
+        None,
+    )
+
+
+def _pending_request(account_id: str, target_client_id: str, user_id: str) -> dict | None:
+    result = (
+        get_supabase()
+        .table("workspace_access_requests")
+        .select("id, status")
+        .eq("requester_user_id", user_id)
+        .eq("target_client_id", target_client_id)
+        .eq("ad_account_id", account_id)
+        .eq("status", "pending")
+        .limit(1)
+        .execute()
+    )
+    return (result.data or [None])[0]
+
+
 @router.get("/session/{session_id}")
 def get_meta_connection_session(
     session_id: str,
     workspace: WorkspaceContext = Depends(get_workspace_context),
 ):
     connection = _connection_session(session_id, workspace)
-    return {"session_id": session_id, "accounts": connection.get("accounts") or []}
+    accounts = []
+    for account in connection.get("accounts") or []:
+        existing = _connected_workspace(str(account["account_id"]), workspace.client_id)
+        request = (
+            _pending_request(str(account["account_id"]), existing["client_id"], workspace.user_id)
+            if existing
+            else None
+        )
+        accounts.append(
+            {
+                **account,
+                "connection_status": "connected_elsewhere" if existing else "available",
+                "access_request_status": request["status"] if request else None,
+            }
+        )
+    return {"session_id": session_id, "accounts": accounts}
 
 
 @router.post("/connect")
@@ -249,8 +294,51 @@ def connect_meta_accounts(
         raise HTTPException(status_code=400, detail="One or more selected accounts are unavailable.")
 
     account_rows = []
+    requested_accounts = []
     for account_id in dict.fromkeys(payload.account_ids):
         account = available[account_id]
+        existing_elsewhere = _connected_workspace(account_id, workspace.client_id)
+        if existing_elsewhere:
+            existing_request = _pending_request(
+                account_id, existing_elsewhere["client_id"], workspace.user_id
+            )
+            if not existing_request:
+                get_supabase().table("workspace_access_requests").insert(
+                    {
+                        "requester_user_id": workspace.user_id,
+                        "requester_client_id": workspace.client_id,
+                        "requester_email": workspace.email,
+                        "target_client_id": existing_elsewhere["client_id"],
+                        "ad_account_id": account_id,
+                        "ad_account_name": account["account_name"],
+                    }
+                ).execute()
+            requested_accounts.append(account_id)
+            continue
+
+        current_result = (
+            get_supabase()
+            .table("meta_accounts")
+            .select("id")
+            .eq("client_id", workspace.client_id)
+            .eq("ad_account_id", account_id)
+            .limit(1)
+            .execute()
+        )
+        if current_result.data:
+            get_supabase().table("meta_accounts").update(
+                {
+                    "ad_account_name": account["account_name"],
+                    "access_token": connection["access_token"],
+                    "token_expires_at": connection.get("token_expires_at"),
+                    "token_status": "active",
+                    "permissions": connection.get("permissions") or [],
+                    "is_active": True,
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                }
+            ).eq("id", current_result.data[0]["id"]).execute()
+            continue
+
         account_rows.append(
             {
                 "client_id": workspace.client_id,
@@ -265,14 +353,16 @@ def connect_meta_accounts(
             }
         )
 
-    saved = get_supabase().table("meta_accounts").upsert(
-        account_rows, on_conflict="client_id,ad_account_id"
-    ).execute()
+    saved_count = 0
+    if account_rows:
+        saved = get_supabase().table("meta_accounts").insert(account_rows).execute()
+        saved_count = len(saved.data or account_rows)
     get_supabase().table("meta_connection_sessions").update(
         {"status": "consumed", "consumed_at": datetime.now(timezone.utc).isoformat()}
     ).eq("id", payload.session_id).execute()
     return {
-        "status": "connected",
-        "accounts": len(saved.data or account_rows),
+        "status": "access_requested" if requested_accounts and not saved_count else "connected",
+        "accounts": saved_count,
+        "access_requests": len(requested_accounts),
         "initial_backfill_days": settings.initial_backfill_days,
     }
