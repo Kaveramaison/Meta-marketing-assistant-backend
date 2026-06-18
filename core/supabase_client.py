@@ -75,6 +75,11 @@ class RestQuery:
         self.headers["Prefer"] = "return=representation"
         return self
 
+    def delete(self):
+        self.method = "DELETE"
+        self.headers["Prefer"] = "return=representation"
+        return self
+
     def upsert(self, payload, on_conflict: str | None = None):
         self.method = "POST"
         self.payload = payload

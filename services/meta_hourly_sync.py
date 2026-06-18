@@ -1,6 +1,8 @@
 from datetime import datetime, timezone
 
 from services.meta_sync import run_scheduled_sync as run_performance_scheduled_sync
+from services.meta_sync import run_backfill_sync
+from core.config import settings
 from services.meta_warehouse_sync import account_lane_is_due, fetch_lead_forms, safe_fetch, supabase, sync_lead_forms, sync_leads
 
 
@@ -58,11 +60,13 @@ def run_lead_sync_for_due_accounts(now: datetime):
 
 def run_scheduled_sync() -> dict:
     now = datetime.now(timezone.utc)
+    onboarding = run_backfill_sync(days=settings.initial_backfill_days)
     performance = run_performance_scheduled_sync()
     leads = run_lead_sync_for_due_accounts(now)
     return {
         "mode": "scheduled",
         "checked_at": now.isoformat(),
+        "onboarding": onboarding,
         "performance": performance,
         "leads": leads,
     }
