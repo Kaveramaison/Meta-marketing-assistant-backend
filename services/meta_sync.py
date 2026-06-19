@@ -596,6 +596,11 @@ def normalize_action_rows(meta_account, rows):
                 "ad_id": row.get("ad_id") or "all",
                 "ad_name": row.get("ad_name"),
                 "action_type": action_type,
+                "action_destination": action.get("action_destination") or "all",
+                "action_device": action.get("action_device") or "all",
+                "action_target_id": action.get("action_target_id") or "all",
+                "action_reaction": action.get("action_reaction") or "all",
+                "action_video_type": action.get("action_video_type") or "all",
                 "value": to_float(action.get("value")),
                 "cost": costs.get(action_type),
                 "conversion_value": values.get(action_type, 0),
@@ -1120,8 +1125,13 @@ def sync_best_effort_account_assets(account, metadata: dict) -> dict:
 def upsert_rows(table_name: str, rows: list[dict], on_conflict: str) -> int:
     if not rows:
         return 0
+    conflict_fields = [field.strip() for field in on_conflict.split(",")]
+    deduplicated = {}
+    for row in rows:
+        deduplicated[tuple(row.get(field) for field in conflict_fields)] = row
+
     total = 0
-    for batch in chunk_list(rows):
+    for batch in chunk_list(list(deduplicated.values())):
         result = supabase().table(table_name).upsert(batch, on_conflict=on_conflict).execute()
         total += len(result.data or [])
     return total
