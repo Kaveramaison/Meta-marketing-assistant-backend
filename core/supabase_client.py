@@ -100,6 +100,14 @@ class RestQuery:
         self.params[column] = f"gte.{self._format_value(value)}"
         return self
 
+    def lt(self, column: str, value):
+        self.params[column] = f"lt.{self._format_value(value)}"
+        return self
+
+    def lte(self, column: str, value):
+        self.params[column] = f"lte.{self._format_value(value)}"
+        return self
+
     def ilike(self, column: str, value):
         self.params[column] = f"ilike.{self._format_value(value)}"
         return self
@@ -111,6 +119,10 @@ class RestQuery:
 
     def limit(self, count: int):
         self.params["limit"] = str(count)
+        return self
+
+    def offset(self, count: int):
+        self.params["offset"] = str(count)
         return self
 
     def order(self, column: str, desc: bool = False):
