@@ -1465,7 +1465,7 @@ def run_scheduled_sync() -> dict:
                 start_date,
                 end_date,
                 include_breakdowns=False,
-                include_dimensions=True,
+                include_dimensions=False,
                 timestamp_columns=["last_performance_synced_at"],
             )
             performance_result["reason"] = reason
